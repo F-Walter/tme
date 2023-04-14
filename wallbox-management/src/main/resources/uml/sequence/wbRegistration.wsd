@@ -1,0 +1,55 @@
+@startuml wbRegistration
+title Registration of a wallbox into the EV Charging Platform
+autonumber "[00]" 
+participant "ABB Facility Manager" as abb 
+participant "S3" as s3 
+participant "Lambda Register vehicles" as lregister 
+participant "ev-backend-kong" as evkong 
+box "EV Backend" 
+participant "wallbox-management" as wb 
+participant "MongoDB" as mongo 
+end box 
+participant "virtual-gateway-kong" as vgkong 
+participant "pulsar" as pulsar 
+box "EV IoT Device Management" 
+participant "Lambda command management" as lcommand 
+participant "IoT Rule" as iotrule 
+participant "IoT Core" as iotcore 
+end box 
+box "Virtual Gateway" 
+participant "IoT Agent" as iotagent 
+end box 
+
+
+abb -> s3: push wallboxesExcel with wallboxes info 
+s3 -> lregister: process wallboxesExcel 
+loop for each line of wallboxesExcel 
+    lregister -> evkong: registerWallbox(wb_serialNumber, \ninstallerPin, ownerPin, ..) 
+    evkong -> wb: registerWallbox(wb_serialNumber, \ninstalerPin, ownerPin, STATE=REGISTRATION_PENDING, ..) 
+    wb -> mongo: storeWallbox(wb_serialNumber, \ninstalerPin, ownerPin, STATE=REGISTRATION_PENDING, ..) 
+    mongo --> wb 
+    wb --> evkong 
+    evkong --> lregister 
+    
+    wb -> vgkong: registerWallboxRequest(wb_serialNumber, ..) 
+    vgkong -> lcommand: registerWallboxRequest(wb_serialNumber, ..) 
+    lcommand -> iotcore: New IoT Job: \nregisterWallboxRequest(wb_serialNumber, ..) 
+    iotcore --> lcommand: JobId 
+    lcommand --> vgkong: JobId 
+    vgkong --> wb: JobId
+     
+    iotcore -> iotagent: MQTT message: \nregisterWallboxRequest(wb_serialNumber, ..) 
+    iotagent --> iotcore: Job completion STATUS=SUCCESS|FAILURE 
+    iotcore -> iotrule: consume Job completion MQTT message (wb_serialNumber, STATUS=SUCCESS|FAILURE) 
+    iotrule -> lcommand: trigger Job completion event (wb_serialNumber, STATUS=SUCCESS|FAILURE) 
+    lcommand -> pulsar: topic:wallbox-registration-completion, message:(wb_serialNumber, STATUS=SUCCESS|FAILURE) 
+    pulsar -> wb: topic:wallbox-registration-completion, message:(wb_serialNumber, STATUS=SUCCESS|FAILURE) 
+    alt STATUS=SUCCESS 
+        wb -> mongo: updateWallbox(JobId, STATUS=ACTIVATION_PENDING) 
+        mongo --> wb 
+    else 
+        wb -> mongo: updateWallbox(JobId, STATUS=REGISTRATION_FAILURE) 
+        mongo --> wb 
+    end 
+end 
+@enduml
